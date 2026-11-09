@@ -5,6 +5,7 @@ qui serait refusé de toute façon) :
   1. interdits / allowlist   2. permission (portée de la tâche)   3. validation des arguments
   4. règles sur les arguments (domaine du destinataire)   5. plafond d'appels par tool et par tâche
   6. débit par clé   7. approbation humaine (tools « always »)
+Le jeton de débit est consommé au verdict `allow` (réservation atomique, N1).
 Politique par défaut : deny. Puis timeout et contrat de sortie à l'exécution.
 """
 from __future__ import annotations
@@ -104,14 +105,15 @@ class Gateway:
         if spec.requires_approval and not approved:
             return Decision("needs_approval", None, "approbation humaine requise", checks + ["approval:required"])
         checks.append("approval:granted" if spec.requires_approval else "approval:not_required")
+        # N1 : le jeton de débit est réservé atomiquement au moment du verdict `allow` (et non plus à l'exécution).
+        if self.limiter is not None and not self.limiter.consume(ctx.key_id):
+            return Decision("deny", "RATE_LIMITED", "débit d'appels de la clé dépassé", checks + ["rate_limit:fail"])
         return Decision("allow", None, "ok", checks)
 
     # ----------------------------------------------------------- exécution
     def execute(self, ctx: CallContext, tool: str, args: dict[str, Any]) -> Outcome:
         spec = self.tools[tool]
         timeout = self.timeout_overrides.get(tool, spec.timeout_s)
-        if self.limiter is not None:
-            self.limiter.consume(ctx.key_id)
         t0 = time.perf_counter()
         fut = self._pool.submit(self.impls[tool], args, ctx)
         try:

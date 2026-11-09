@@ -132,8 +132,9 @@
 
 - `DOSSIER_NOT_FOUND` (réessayable : non) — Aucun dossier avec cet identifiant.
 - `NO_DRAFTS` (réessayable : non) — Le dossier ne contient aucun brouillon à transmettre.
-- `ALREADY_SUBMITTED` (réessayable : non) — Le dossier a déjà été transmis.
+- `ALREADY_SUBMITTED` (réessayable : non) — Le dossier a déjà été transmis (registre d'idempotence persistant, toutes tâches et missions confondues).
 - `EXTERNAL_UNAVAILABLE` (réessayable : oui) — Le service d'envoi est indisponible ; toute nouvelle tentative exige une nouvelle approbation.
+- `OUTCOME_UNKNOWN` (réessayable : non) — Un envoi précédent du même dossier a une issue indéterminée (timeout, crash) : rapprochement opérateur requis avant toute nouvelle tentative.
 
 ## Erreurs communes (gateway)
 

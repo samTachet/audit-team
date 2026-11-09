@@ -10,11 +10,12 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, PlainTextResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from . import __version__
 from .agent import ApprovalError, Runtime, TaskInput, fingerprint
@@ -25,7 +26,7 @@ from .types import REQUEST_ID_RE
 
 STATUS_BY_APPROVAL_ERROR = {
     "INVALID_DECISION": 422, "NOT_PENDING": 409, "FORBIDDEN_SCOPE": 403, "SELF_APPROVAL": 403,
-    "JOURNAL_TAMPERED": 409, "EXPIRED": 409, "ARGS_MISMATCH": 409,
+    "JOURNAL_TAMPERED": 409, "EXPIRED": 409, "ARGS_MISMATCH": 409, "ARGS_HASH_REQUIRED": 422,
 }
 
 
@@ -36,14 +37,29 @@ class Principal:
     scopes: tuple[str, ...]
 
 
+# B1 : un plafond est un nombre FINI (NaN et ±inf refusés dès la validation Pydantic, puis par Budget.effective).
+FiniteFloat = Annotated[float, Field(allow_inf_nan=False)]
+
+
 class TaskRequest(BaseModel):
     task: str = Field(min_length=3, max_length=2000)
     scopes: list[str] | None = None
-    budget: dict[str, float] | None = None
+    budget: dict[str, FiniteFloat] | None = None
 
 
 class ApprovalRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     decision: str
+    # I2 : hachage des arguments tel qu'affiché à l'approbateur ; obligatoire pour approuver.
+    args_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+
+
+def assert_single_worker() -> None:
+    """I5 / ENF-05 : verrous, limiteurs, tâches vivantes, checkpointer et registre sont locaux au processus."""
+    for var in ("WEB_CONCURRENCY", "UVICORN_WORKERS"):
+        v = os.environ.get(var)
+        if v and v.strip() not in {"", "1"}:
+            raise RuntimeError(f"{var}={v} : audit-team impose un seul processus (état local au processus)")
 
 
 def _err(status: int, code: str, message: str) -> HTTPException:
@@ -51,6 +67,7 @@ def _err(status: int, code: str, message: str) -> HTTPException:
 
 
 def create_app(runtime: Runtime | None = None, api_keys: dict[str, dict[str, str]] | None = None) -> FastAPI:
+    assert_single_worker()
     policy = load_policy()
     keys = api_keys if api_keys is not None else json.loads(os.environ.get("ACSI_API_KEYS", "{}"))
     runtime = runtime or Runtime(Path(os.environ.get("ACSI_JOURNAL_DIR", "data/journal")))
@@ -83,6 +100,19 @@ def create_app(runtime: Runtime | None = None, api_keys: dict[str, dict[str, str
     async def _http_exc(_: Request, exc: HTTPException):
         body = exc.detail if isinstance(exc.detail, dict) and "error" in exc.detail else {"error": {"code": "HTTP_ERROR", "message": str(exc.detail)}}
         return JSONResponse(status_code=exc.status_code, content=body)
+
+    @app.exception_handler(RequestValidationError)
+    async def _validation_exc(_: Request, exc: RequestValidationError):
+        errs = exc.errors()
+        budget = any("budget" in [str(x) for x in e.get("loc", ())] for e in errs)
+        code = "INVALID_BUDGET" if budget else "INVALID_REQUEST"
+        msg = "; ".join(f"{'.'.join(str(x) for x in e.get('loc', ()))} : {e.get('msg')}" for e in errs)[:500]
+        return JSONResponse(status_code=422, content={"error": {"code": code, "message": msg}})
+
+    app.state.principal = principal
+    app.state.err = _err
+    app.state.policy = policy
+    app.state.keys = keys
 
     @app.get("/healthz")
     def healthz():
@@ -133,7 +163,8 @@ def create_app(runtime: Runtime | None = None, api_keys: dict[str, dict[str, str
     def approve(request_id: str, approval_id: str, body: ApprovalRequest, p: Principal = Depends(principal)):
         visible(p, request_id)
         try:
-            return runtime.resolve_approval(request_id, approval_id, body.decision, p.id, p.scopes).public()
+            return runtime.resolve_approval(request_id, approval_id, body.decision, p.id, p.scopes,
+                                            args_hash_seen=body.args_hash, require_args_hash=True).public()
         except ApprovalError as e:
             raise _err(STATUS_BY_APPROVAL_ERROR.get(e.code, 400), e.code, e.message) from None
 

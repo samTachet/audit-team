@@ -4,8 +4,10 @@
     "prompt_hash": "9e5bfd7069bb7a2d",
     "model_id": "mock-deterministic",
     "planner_id": "rule-planner-v1",
-    "specs_hash": "0d895d3c8bc66747",
-    "tools_code_hash": "bceca5da3956cd7c"
+    "specs_hash": "70e75c86fb1671ef",
+    "tools_code_hash": "a9a85d56ccf441ec",
+    "guarded_code_hash": "6374871cb79ef51c",
+    "frameworks": "langgraph==1.2.20,crewai==1.15.39"
   },
   "tolerances": {
     "steps": 0,

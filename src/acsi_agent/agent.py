@@ -10,13 +10,25 @@ Garanties :
   que d'un humain distinct du demandeur disposant de la portée `audit:approve` ;
 - le budget est vérifié avant chaque appel du planner et avant chaque exécution de tool.
 
-Limite connue : les services simulés vivent en mémoire. Après un redémarrage du processus, une tâche en
-attente d'approbation ne peut plus être exécutée et est clôturée en `failed` (RUNTIME_RESTARTED).
+Correctifs audit-team (P0) :
+- B1 : budgets non finis (NaN, inf) refusés (`Budget.effective`, `Budget.__post_init__`) ;
+- I4 : une exception ou une sortie invalide du planner clôt la tâche en `failed` (code `PLANNER_ERROR`)
+  et libère l'entrée vivante ;
+- I2 : `args_hash` et une copie des arguments sont gardés EN MÉMOIRE (`Live.approvals`) à la demande ;
+  à la résolution, le hachage relu dans le journal et celui renvoyé par l'approbateur doivent être
+  identiques à celui de la mémoire, et ce sont les arguments de la mémoire qui sont exécutés ;
+- I3 : `submit_dossier` consulte un registre d'idempotence persistant, partagé entre tâches et missions ;
+- I1 : journal à tête ancrée, HMAC optionnel, scellé à la fin de la tâche.
+
+Limite connue (mono-processus, I5) : les services simulés et `Live` vivent en mémoire. Après un redémarrage
+du processus, une tâche en attente d'approbation ne peut plus être exécutée et est clôturée en `failed`
+(RUNTIME_RESTARTED) dès qu'on la relit ou qu'on tente de l'approuver.
 """
 from __future__ import annotations
 
 import hashlib
 import json
+import os
 import threading
 import time
 from dataclasses import dataclass, field
@@ -27,6 +39,7 @@ from . import __version__
 from .backends import Services, fixtures_hash
 from .budget import Budget, Meter, Violation, check_post_planner, check_pre_planner, check_pre_tool, ratios
 from .gateway import Decision, Gateway
+from .idempotency import IdempotencyRegistry
 from .journal import Journal
 from .planners import make_planner
 from .prompt import PROMPT_VERSION, SYSTEM_PROMPT, build_prompt, estimate_tokens
@@ -35,7 +48,7 @@ from .specs import ToolSpec, load_policy, load_tools, specs_hash
 from .tools_impl import build_impls
 from .types import CallContext, Finish, PlanContext, Planner, StepRecord, ToolAction, new_request_id
 
-CAPABILITY_PHASE = 3
+CAPABILITY_PHASE = 4
 MODEL_ID = "mock-deterministic"
 TERMINAL = {"completed", "refused", "failed", "budget_exceeded", "expired"}
 
@@ -77,15 +90,33 @@ class TaskResult:
         }
 
 
+GUARDED_CODE = ("planners.py", "gateway.py", "budget.py")
+
+
+def _framework_versions() -> str:
+    from importlib.metadata import PackageNotFoundError, version
+    out = []
+    for name in ("langgraph", "crewai"):
+        try:
+            out.append(f"{name}=={version(name)}")
+        except PackageNotFoundError:
+            out.append(f"{name}:absent")
+    return ",".join(out)
+
+
 def fingerprint(planner_id: str) -> dict[str, str]:
-    """Ce qui, en changeant, impose de rejouer les scénarios de référence : prompt, modèle, tools (specs et code)."""
+    """Ce qui, en changeant, impose de rejouer les scénarios de référence : prompt, modèle, tools (specs et code),
+    code du planner, de la gateway et du budget (N7), versions de LangGraph et CrewAI (ENF-13)."""
+    here = Path(__file__).parent
     return {
         "prompt_version": PROMPT_VERSION,
         "prompt_hash": hashlib.sha256(SYSTEM_PROMPT.encode()).hexdigest()[:16],
         "model_id": MODEL_ID,
         "planner_id": planner_id,
         "specs_hash": specs_hash(),
-        "tools_code_hash": hashlib.sha256((Path(__file__).parent / "tools_impl.py").read_bytes()).hexdigest()[:16],
+        "tools_code_hash": hashlib.sha256((here / "tools_impl.py").read_bytes()).hexdigest()[:16],
+        "guarded_code_hash": hashlib.sha256(b"".join((here / f).read_bytes() for f in GUARDED_CODE)).hexdigest()[:16],
+        "frameworks": _framework_versions(),
     }
 
 
@@ -172,13 +203,26 @@ class Live:
     svc: Services
     gateway: Gateway
     planner: Planner
+    # I2 : approval_id -> (args_hash, copie des arguments), gardés en mémoire au moment de la demande
+    approvals: dict[str, tuple[str, dict[str, Any]]] = field(default_factory=dict)
+
+
+def default_state_dir(journal_dir: Path) -> Path:
+    return Path(os.environ.get("ACSI_STATE_DIR") or Path(journal_dir).with_name(Path(journal_dir).name + "-state"))
+
+
+def hmac_key_from_env() -> bytes | None:
+    k = os.environ.get("ACSI_JOURNAL_HMAC_KEY")
+    return k.encode() if k else None
 
 
 class Runtime:
     def __init__(self, journal_dir: Path, tools: dict[str, ToolSpec] | None = None, policy: dict[str, Any] | None = None,
                  timeout_overrides: dict[str, float] | None = None, clock: Callable[[], float] = time.time,
-                 limiter_clock: Callable[[], float] = time.monotonic):
-        self.journal = Journal(journal_dir)
+                 limiter_clock: Callable[[], float] = time.monotonic, hmac_key: bytes | None = None,
+                 anchor_dir: Path | None = None, idempotency: IdempotencyRegistry | None = None):
+        self.journal = Journal(journal_dir, anchor_dir=anchor_dir, hmac_key=hmac_key if hmac_key is not None else hmac_key_from_env())
+        self.idempotency = idempotency or IdempotencyRegistry(default_state_dir(journal_dir) / "idempotency.json")
         self.tools = tools or load_tools()
         self.policy = policy or load_policy()
         self.timeout_overrides = timeout_overrides
@@ -222,7 +266,7 @@ class Runtime:
         if st.pending and not st.finished:
             p = st.pending
             pending = {"approval_id": p["approval_id"], "tool": p["tool"], "args": p["args"], "step": p["step"],
-                       "expires_at": p["expires_at"], "requested_by": p["requested_by"]}
+                       "args_hash": p["args_hash"], "expires_at": p["expires_at"], "requested_by": p["requested_by"]}
         return TaskResult(st.request_id, status, answer, list(st.steps), effects, st.metrics(),
                           self.journal.read(st.request_id), st.owner, pending)
 
@@ -234,7 +278,7 @@ class Runtime:
         rid = request_id or new_request_id()
         budget, clamped = Budget.effective(self.policy["budget_default"], ti.budget)
         svc = Services.from_fixtures(ti.faults)
-        impls = build_impls(svc)
+        impls = build_impls(svc, self.idempotency)
         lat = float(ti.faults.get("tool_latency_s", 0.0))
         if lat:  # injection de latence pour éprouver le budget de temps
             impls = {n: (lambda f: (lambda a, c: (time.sleep(lat), f(a, c))[1]))(f) for n, f in impls.items()}
@@ -265,8 +309,31 @@ class Runtime:
                 self._expire(st)
             return self._result(st)
 
+    def sweep(self) -> list[str]:
+        """Balayeur (N2 / EF-18) : expire les approbations échues et clôt les tâches orphelines (absentes de la
+        mémoire après un redémarrage), sans attendre qu'on les relise. Renvoie les identifiants clôturés."""
+        closed = []
+        for rid in self.journal.list_ids("req_"):
+            anc = self.journal.anchor(rid)
+            if anc and anc.get("sealed"):
+                continue
+            with self._lock(rid):
+                st = self._state(rid)
+                if st.finished:
+                    continue
+                if st.pending and self.clock() > st.pending["expires_at"]:
+                    self._expire(st)
+                    closed.append(rid)
+                elif rid not in self._live:
+                    self._finish(st, "failed", "Le runtime a redémarré : tâche orpheline clôturée par le balayeur.",
+                                 code="RUNTIME_RESTARTED")
+                    closed.append(rid)
+        return closed
+
     def resolve_approval(self, rid: str, approval_id: str, decision: str, approver_id: str,
-                         approver_scopes: tuple[str, ...] | list[str]) -> TaskResult:
+                         approver_scopes: tuple[str, ...] | list[str], args_hash_seen: str | None = None,
+                         require_args_hash: bool = False) -> TaskResult:
+        """`args_hash_seen` : hachage des arguments tel qu'affiché à l'approbateur (obligatoire via l'API)."""
         if decision not in {"approve", "reject"}:
             raise ApprovalError("INVALID_DECISION", "decision doit valoir approve ou reject")
         pol = self.policy["approval"]
@@ -278,6 +345,8 @@ class Runtime:
                 raise ApprovalError("FORBIDDEN_SCOPE", f"la portée `{pol['approver_scope']}` est requise pour approuver")
             if pol["require_distinct_approver"] and approver_id == st.owner:
                 raise ApprovalError("SELF_APPROVAL", "l'approbateur doit être distinct du demandeur")
+            if require_args_hash and decision == "approve" and args_hash_seen is None:
+                raise ApprovalError("ARGS_HASH_REQUIRED", "renvoyer le `args_hash` affiché pour approuver")
             ok, why = self.journal.verify(rid)
             if not ok:
                 raise ApprovalError("JOURNAL_TAMPERED", f"journal altéré ({why}) : approbation refusée")
@@ -287,10 +356,19 @@ class Runtime:
             pend = dict(st.pending)
             if args_hash(pend["args"]) != pend["args_hash"]:
                 raise ApprovalError("ARGS_MISMATCH", "arguments différents de ceux demandés : approbation refusée")
+            if args_hash_seen is not None and args_hash_seen != pend["args_hash"]:
+                raise ApprovalError("ARGS_MISMATCH", "le hachage relu par l'approbateur ne correspond pas à la demande")
             live = self._live.get(rid)
+            if live is not None:
+                mem = live.approvals.get(approval_id)
+                if mem is None or mem[0] != pend["args_hash"] or args_hash(mem[1]) != mem[0]:
+                    raise ApprovalError("ARGS_MISMATCH", "arguments du journal différents de ceux gardés en mémoire : approbation refusée")
+                live.approvals.pop(approval_id, None)  # usage unique
+                pend["args"] = dict(mem[1])  # on exécute la copie mémoire, jamais une relecture du fichier
             if live is None:
                 self._emit(st, "approval_resolved", {"approval_id": approval_id, "decision": decision, "approver": approver_id})
-                self._finish(st, "failed", "Le runtime a redémarré pendant l'attente : l'action n'a pas été exécutée (RUNTIME_RESTARTED).")
+                self._finish(st, "failed", "Le runtime a redémarré pendant l'attente : l'action n'a pas été exécutée (RUNTIME_RESTARTED).",
+                             code="RUNTIME_RESTARTED")
                 return self._result(st)
             self._emit(st, "approval_resolved", {"approval_id": approval_id, "decision": decision, "approver": approver_id})
             if decision == "reject":
@@ -325,7 +403,7 @@ class Runtime:
     def _drive(self, st: State) -> None:
         live = self._live.get(st.request_id)
         if live is None:
-            self._finish(st, "failed", "Le runtime a redémarré : tâche interrompue (RUNTIME_RESTARTED).")
+            self._finish(st, "failed", "Le runtime a redémarré : tâche interrompue (RUNTIME_RESTARTED).", code="RUNTIME_RESTARTED")
             return
         b = st.budget
         assert b is not None
@@ -335,7 +413,18 @@ class Runtime:
                 self._budget_stop(st, v, None)
                 return
             t0 = time.perf_counter()
-            out = live.planner.plan(PlanContext(task=st.task, scopes=list(st.scopes), steps=list(st.steps)))
+            try:  # I4 : une exception du planner (réseau, quota, JSON invalide…) ne laisse pas de tâche fantôme
+                out = live.planner.plan(PlanContext(task=st.task, scopes=list(st.scopes), steps=list(st.steps)))
+                if not (isinstance(out, Finish) or (isinstance(out, ToolAction) and isinstance(out.tool, str)
+                                                    and isinstance(out.args, dict))):
+                    raise TypeError(f"sortie de planner invalide : {type(out).__name__}")
+                if isinstance(out, Finish) and out.status not in {"completed", "refused", "failed"}:
+                    raise TypeError(f"statut de conclusion invalide : {out.status!r}")
+            except Exception as e:  # noqa: BLE001
+                self._emit(st, "planner_error", {"error_type": type(e).__name__, "message": str(e)[:300]})
+                self._finish(st, "failed", f"Erreur du planner ({type(e).__name__}) : tâche arrêtée sans autre action.",
+                             code="PLANNER_ERROR")
+                return
             prompt = build_prompt(st.task, st.steps, self.tools)
             t_in = estimate_tokens(prompt)
             t_out = estimate_tokens(json.dumps({"tool": out.tool, "args": out.args} if isinstance(out, ToolAction)
@@ -364,9 +453,11 @@ class Runtime:
                              error={"code": dec.code, "message": dec.reason})
             elif dec.verdict == "needs_approval":
                 ttl = self.policy["approval"]["ttl_s"]
+                apr_id, h = _short("apr_", st.request_id, step_no), args_hash(out.args)
+                live.approvals[apr_id] = (h, json.loads(json.dumps(out.args)))  # copie profonde, en mémoire
                 self._emit(st, "approval_requested", {
-                    "approval_id": _short("apr_", st.request_id, step_no), "step": step_no, "tool": out.tool,
-                    "args": out.args, "args_hash": args_hash(out.args), "requested_by": st.owner,
+                    "approval_id": apr_id, "step": step_no, "tool": out.tool,
+                    "args": out.args, "args_hash": h, "requested_by": st.owner,
                     "expires_at": self.clock() + ttl, "why": next((a["why"] for a in self.policy["approval_required"] if a["tool"] == out.tool), ""),
                 })
                 return
@@ -415,10 +506,16 @@ class Runtime:
                      error={"code": "APPROVAL_EXPIRED", "message": "non approuvé avant expiration"}, approval_id=p.get("approval_id"))
         self._finish(st, "expired", f"Approbation de `{p.get('tool')}` expirée : action non exécutée.")
 
-    def _finish(self, st: State, status: str, answer: str) -> None:
+    def _finish(self, st: State, status: str, answer: str, code: str | None = None) -> None:
         live = self._live.pop(st.request_id, None)
         effects = live.svc.effects() if live else {}
-        self._emit(st, "task_finished", {"status": status, "answer": answer, "metrics": st.metrics(), "effects": effects})
+        data = {"status": status, "answer": answer, "metrics": st.metrics(), "effects": effects}
+        if code:
+            data["code"] = code
+        self._emit(st, "task_finished", data)
+        self.journal.seal(st.request_id)  # I1 : journal scellé, plus aucun ajout possible
+        with self._guard:
+            self._locks.pop(st.request_id, None)  # N2 : verrou libéré en fin de tâche
 
 
 def _short(prefix: str, *parts: object) -> str:

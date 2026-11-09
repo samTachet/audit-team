@@ -73,9 +73,14 @@ def test_full_human_approval_flow(client):
     assert r.status_code == 403 and r.json()["error"]["code"] == "SELF_APPROVAL"
     assert client.get(f"/tasks/{rid}", headers=H("k-alice")).json()["status"] == "awaiting_approval"
 
-    r = client.post(url, json={"decision": "approve"}, headers=H("k-bob"))
+    r = client.post(url, json={"decision": "approve"}, headers=H("k-bob"))  # I2 : sans le hachage relu, refus
+    assert r.status_code == 422 and r.json()["error"]["code"] == "ARGS_HASH_REQUIRED"
+    r = client.post(url, json={"decision": "approve", "args_hash": "0" * 64}, headers=H("k-bob"))
+    assert r.status_code == 409 and r.json()["error"]["code"] == "ARGS_MISMATCH"
+    r = client.post(url, json={"decision": "approve", "args_hash": t["pending_approval"]["args_hash"]}, headers=H("k-bob"))
     assert r.status_code == 200 and r.json()["status"] == "completed" and r.json()["effects"]["mail_sent"] == 1
-    assert client.post(url, json={"decision": "approve"}, headers=H("k-bob")).status_code == 409  # usage unique
+    assert client.post(url, json={"decision": "approve", "args_hash": t["pending_approval"]["args_hash"]},
+                       headers=H("k-bob")).status_code == 409  # usage unique
 
     traj = client.get(f"/tasks/{rid}/trajectory", headers=H("k-alice")).json()
     kinds = [e["type"] for e in traj["events"]]
@@ -86,7 +91,10 @@ def test_full_human_approval_flow(client):
 def test_approver_cannot_alter_the_arguments(client):
     t = create(client, "k-alice", SUBMIT, scopes=["audit:read", "audit:submit"]).json()
     url = f"/tasks/{t['request_id']}/approvals/{t['pending_approval']['approval_id']}"
-    client.post(url, json={"decision": "approve", "args": {"recipient": "x@evil.example"}}, headers=H("k-bob"))
+    r = client.post(url, json={"decision": "approve", "args_hash": t["pending_approval"]["args_hash"],
+                               "args": {"recipient": "x@evil.example"}}, headers=H("k-bob"))
+    assert r.status_code == 422  # champ inconnu refusé : l'approbateur ne transmet jamais d'arguments
+    client.post(url, json={"decision": "approve", "args_hash": t["pending_approval"]["args_hash"]}, headers=H("k-bob"))
     sent = client.app.state.runtime.journal.read(t["request_id"])
     call = next(e["data"] for e in sent if e["type"] == "tool_call")
     assert call["args"]["recipient"] == "audit@client.example"

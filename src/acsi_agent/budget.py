@@ -9,6 +9,7 @@ attente d'approbation humaine exclue), reconstruit depuis le journal.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import asdict, dataclass
 from typing import Any
 
@@ -21,6 +22,11 @@ class Budget:
     max_cost_usd: float
     max_wall_s: float
 
+    def __post_init__(self) -> None:
+        for k, v in asdict(self).items():
+            if not _finite_positive(v):
+                raise ValueError(f"plafond invalide : {k} (nombre fini strictement positif attendu)")
+
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
 
@@ -28,16 +34,24 @@ class Budget:
     def effective(cls, defaults: dict[str, Any], overrides: dict[str, Any] | None) -> tuple["Budget", list[str]]:
         """Un appelant peut RÉDUIRE un plafond, jamais l'augmenter ; les tentatives sont listées."""
         vals, clamped = dict(defaults), []
+        for k, v in defaults.items():
+            if not _finite_positive(v):
+                raise ValueError(f"plafond par défaut invalide : {k}")
         for k, v in (overrides or {}).items():
             if k not in defaults:
                 raise ValueError(f"plafond inconnu : {k}")
-            if not isinstance(v, (int, float)) or isinstance(v, bool) or v <= 0:
-                raise ValueError(f"plafond invalide : {k}")
+            # B1 : NaN et ±inf rendent toutes les comparaisons fausses et désactiveraient le plafond.
+            if not _finite_positive(v):
+                raise ValueError(f"plafond invalide : {k} (nombre fini strictement positif attendu)")
             if v > defaults[k]:
                 clamped.append(k)
             else:
                 vals[k] = v
         return cls(**vals), clamped
+
+
+def _finite_positive(v: Any) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) and v > 0
 
 
 @dataclass(frozen=True)

@@ -10,6 +10,7 @@ import unicodedata
 from typing import Any, Callable
 
 from .backends import ExternalUnavailable, Services
+from .idempotency import IdempotencyRegistry, idempotency_key
 from .types import CallContext
 
 
@@ -55,7 +56,8 @@ def _short_id(prefix: str, *parts: object) -> str:
     return prefix + hashlib.sha1(":".join(map(str, parts)).encode()).hexdigest()[:6]
 
 
-def build_impls(svc: Services) -> dict[str, Callable[[dict[str, Any], CallContext], dict[str, Any]]]:
+def build_impls(svc: Services, registry: IdempotencyRegistry | None = None
+                ) -> dict[str, Callable[[dict[str, Any], CallContext], dict[str, Any]]]:
     def classify_excerpt(args, ctx):
         return classify(args["text"])
 
@@ -77,7 +79,10 @@ def build_impls(svc: Services) -> dict[str, Callable[[dict[str, Any], CallContex
             raise ToolError("DOSSIER_NOT_FOUND", f"dossier {args['dossier_id']} introuvable")
         if args["nc_id"] not in {n["id"] for n in d["nonconformities"]}:
             raise ToolError("NC_NOT_FOUND", f"{args['nc_id']} n'appartient pas à {args['dossier_id']}")
-        draft_id = _short_id("DR-", ctx.request_id, ctx.step)
+        draft_id = _short_id("DR-", ctx.idem_key) if ctx.idem_key else _short_id("DR-", ctx.request_id, ctx.step)
+        if ctx.idem_key and draft_id in svc.drafts:  # reprise après crash : le brouillon existe déjà, pas de doublon
+            dr = svc.drafts[draft_id]
+            return {"draft_id": draft_id, "dossier_id": dr["dossier_id"], "nc_id": dr["nc_id"], "status": dr["status"]}
         svc.drafts[draft_id] = {"dossier_id": args["dossier_id"], "nc_id": args["nc_id"], "text": args["text"], "status": "draft"}
         svc.drafts_created += 1
         return {"draft_id": draft_id, "dossier_id": args["dossier_id"], "nc_id": args["nc_id"], "status": "draft"}
@@ -101,15 +106,27 @@ def build_impls(svc: Services) -> dict[str, Callable[[dict[str, Any], CallContex
         ids = sorted(i for i, dr in svc.drafts.items() if dr["dossier_id"] == args["dossier_id"] and dr["status"] == "draft")
         if not ids:
             raise ToolError("NO_DRAFTS", "aucun brouillon à transmettre")
-        body = "\n\n".join(svc.drafts[i]["text"] for i in ids)
+        texts = [svc.drafts[i]["text"] for i in ids]
+        body = "\n\n".join(texts)
+        key = idempotency_key(args["dossier_id"], args["recipient"], texts)
+        if registry is not None:  # I3 : idempotence persistante entre tâches et missions
+            ok, cur = registry.reserve(args["dossier_id"], key, ctx.request_id)
+            if not ok:
+                if cur and cur.get("state") == "submitted":
+                    raise ToolError("ALREADY_SUBMITTED", "dossier déjà transmis (registre d'idempotence)")
+                raise ToolError("OUTCOME_UNKNOWN", "un envoi précédent a une issue indéterminée : rapprochement requis")
         try:
             svc.mail.send(args["recipient"], f"Dossier d'audit {args['dossier_id']}", body)
         except ExternalUnavailable as e:
+            if registry is not None:
+                registry.release(args["dossier_id"], key)
             raise ToolError("EXTERNAL_UNAVAILABLE", str(e)) from e
         for i in ids:
             svc.drafts[i]["status"] = "submitted"
         d["status"] = "submitted"
         sub_id = _short_id("SUB-", ctx.request_id, ctx.step)
+        if registry is not None:
+            registry.complete(args["dossier_id"], key, sub_id)
         svc.submissions.append({"submission_id": sub_id, "dossier_id": args["dossier_id"], "recipient": args["recipient"]})
         return {"submission_id": sub_id, "dossier_id": args["dossier_id"], "recipient": args["recipient"],
                 "drafts_submitted": len(ids), "status": "submitted"}

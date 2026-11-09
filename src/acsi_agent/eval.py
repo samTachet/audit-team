@@ -11,12 +11,14 @@ import argparse
 import json
 import sys
 import tempfile
+import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
 from . import agent as agent_mod
 from .agent import Runtime, TaskInput, fingerprint
+from .idempotency import IdempotencyRegistry
 from .specs import load_scenarios
 from .types import StepRecord
 
@@ -141,9 +143,16 @@ def to_task_input(sc: dict[str, Any]) -> TaskInput:
                      planner=inp["planner"], faults=inp.get("faults", {}), budget=inp.get("budget", {}))
 
 
+def isolate_world(runtime: Runtime, label: str) -> None:
+    """Chaque scénario est un monde isolé : fixtures neuves (v1) ET registre d'idempotence neuf (v2, I3)."""
+    runtime.idempotency = IdempotencyRegistry(
+        agent_mod.default_state_dir(runtime.journal.dir) / "eval-worlds" / f"{label}-{uuid.uuid4().hex[:8]}.json")
+
+
 def run_scenario(sc: dict[str, Any], runtime: Runtime) -> ScenarioReport:
     if sc.get("min_phase", 2) > agent_mod.CAPABILITY_PHASE:
         return ScenarioReport(sc["id"], sc["category"], skipped=f"nécessite la phase {sc['min_phase']}")
+    isolate_world(runtime, sc["id"])
     result = drive_with_approvals(runtime, runtime.start(to_task_input(sc)), sc["input"].get("approvals", []))
     return score(sc, result)
 
@@ -232,7 +241,8 @@ def main(argv: list[str] | None = None) -> int:
         Path(a.json_out).write_text(json.dumps({
             "fingerprint": fingerprint("rule-planner-v1"), "aggregate": agg, "scenarios": [asdict(r) for r in reports],
         }, ensure_ascii=False, indent=2), encoding="utf-8")
-    return 0 if all(r.success for r in reports if not r.skipped) else 1
+    # N4 : un scénario ignoré fait échouer l'éval (il ne peut plus disparaître en silence).
+    return 0 if reports and all(r.success and not r.skipped for r in reports) else 1
 
 
 if __name__ == "__main__":

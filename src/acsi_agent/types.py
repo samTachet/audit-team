@@ -6,11 +6,17 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-REQUEST_ID_RE = re.compile(r"^req_[0-9a-f]{32}$")
+REQUEST_ID_RE = re.compile(r"^(req|mis)_[0-9a-f]{32}$")
+MISSION_ID_RE = re.compile(r"^mis_[0-9a-f]{32}$")
 
 
 def new_request_id() -> str:
     return "req_" + uuid.uuid4().hex
+
+
+def new_mission_id() -> str:
+    """Identifiant de mission : sert aussi de `thread_id` LangGraph."""
+    return "mis_" + uuid.uuid4().hex
 
 
 @dataclass(frozen=True)
@@ -51,6 +57,7 @@ class CallContext:
     step: int
     scopes: tuple[str, ...] = ()
     key_id: str = "anonymous"
+    idem_key: str | None = None  # clé d'idempotence (équipe : un brouillon par mission, NC et tour)
 
 
 class Planner(Protocol):

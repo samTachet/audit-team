@@ -19,6 +19,7 @@ LEAD = ("audit:approve",)
 def run_ref(runtime):
     out = {}
     for sc in load_scenarios():
+        ev.isolate_world(runtime, sc["id"])
         out[sc["id"]] = ev.drive_with_approvals(runtime, runtime.start(ev.to_task_input(sc)), sc["input"].get("approvals", []))
     return out
 
@@ -183,7 +184,7 @@ def client(tmp_path):
 def test_api_replay_timeline_and_metrics(client):
     t = client.post("/tasks", json={"task": "Soumets le dossier D-001 à audit@client.example.", "scopes": ["audit:read", "audit:submit"]},
                     headers=H("k-alice")).json()
-    client.post(f"/tasks/{t['request_id']}/approvals/{t['pending_approval']['approval_id']}", json={"decision": "approve"}, headers=H("k-bob"))
+    client.post(f"/tasks/{t['request_id']}/approvals/{t['pending_approval']['approval_id']}", json={"decision": "approve", "args_hash": t["pending_approval"]["args_hash"]}, headers=H("k-bob"))
     rid = t["request_id"]
     rep = client.get(f"/tasks/{rid}/replay", headers=H("k-alice")).json()
     assert rep["replayable"] and rep["identical"] and rep["chain_ok"]

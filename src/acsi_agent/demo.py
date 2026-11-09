@@ -74,7 +74,7 @@ def run(journal_dir: Path | None = None) -> tuple[str, dict[str, Any]]:
     self_ = client.post(url, json={"decision": "approve"}, headers=H("k-alice"))
     t.p(f"alice tente d'approuver sa propre demande → **HTTP {self_.status_code}** `{self_.json()['error']['code']}`.")
     facts["self_approval_code"] = self_.json()["error"]["code"]
-    done = client.post(url, json={"decision": "approve"}, headers=H("k-bob")).json()
+    done = client.post(url, json={"decision": "approve", "args_hash": pend["args_hash"]}, headers=H("k-bob")).json()
     t.p(f"bob (approbateur distinct) approuve → statut **{done['status']}**, effets {done['effects']}.")
     t.p(f"Réponse de l'agent : {done['answer']}")
     facts["completed"] = done["status"] == "completed" and done["effects"] == {"mail_sent": 1, "drafts_created": 1, "drafts_deleted": 0}
