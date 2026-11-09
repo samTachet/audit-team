@@ -8,3 +8,6 @@ data/journal
 .env
 tests
 docs
+data/journal-anchors
+data/journal-state
+data/checkpoints*
