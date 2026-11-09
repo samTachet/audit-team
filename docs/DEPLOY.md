@@ -33,8 +33,16 @@ Le volume `acsi-journal` survit aux versions. Pour qu'un retour arrière reste p
 - le format du journal ne doit évoluer que de façon **additive** (nouveaux champs ou nouveaux types d'événements ; le décodage ignore les types inconnus) ;
 - une évolution **non additive** exige un instantané du volume avant déploiement : revenir à une version antérieure ne restaure pas les données.
 
+## audit-team : un seul worker, trois volumes
+
+L'API `audit_team.api:create_app` refuse de démarrer si `WEB_CONCURRENCY`/`UVICORN_WORKERS` > 1. `compose.yaml` monte
+trois volumes : `acsi-journal` (journal), `acsi-anchors` (ancres de tête, séparées pour qu'une troncature du journal
+seul soit détectée) et `acsi-state` (registre d'idempotence et checkpoints LangGraph SQLite). La clé
+`ACSI_JOURNAL_HMAC_KEY` doit venir du gestionnaire de secrets, pas d'un de ces volumes. Un retour arrière vers la v1
+(`acsi-agent`) n'est pas prévu : les journaux v2 portent des champs additionnels (`actor`, `node`, `checkpoint_id`, `mac`).
+
 ## Ce qui est vérifié, et ce qui ne l'est pas
 
 - Vérifié par `tests/test_deploy.py` avec un faux `docker` : ordre des opérations, état `current`/`previous`, retour automatique, refus sur arbre sale / portes en échec / tag malformé / image absente.
-- **Non vérifié ici** : la construction réelle de l'image et le démarrage du conteneur (pas de démon Docker dans l'environnement de développement de cette livraison). À faire une fois : `docker compose build api && docker compose up api`, puis `ACSI_SMOKE_KEY=… python3 scripts/smoke.py http://127.0.0.1:8000`.
-- `.github/workflows/ci.yml` n'a pas été exécuté sur GitHub ; ses commandes sont celles qui passent en local.
+- **Non vérifié en local** : la construction réelle de l'image et le démarrage du conteneur (pas de démon Docker dans l'environnement de développement). Le job `docker` de `.github/workflows/ci.yml` les exécute (build, `docker compose run --rm eval`, `/healthz` de l'API).
+- État de la CI GitHub : voir la section suivante (mise à jour après la première exécution).
