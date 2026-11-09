@@ -10,7 +10,55 @@ from typing import Any
 
 from jsonschema import Draft202012Validator
 
-from .specs import load_policy, load_scenarios, load_tools
+from .specs import SPECS_DIR, load_policy, load_scenarios, load_tools
+
+
+def load_crew() -> dict[str, Any]:
+    import json
+    return json.loads((SPECS_DIR / "crew.json").read_text(encoding="utf-8"))
+
+
+def check_crew(crew: dict[str, Any], tools, policy: dict[str, Any]) -> list[str]:
+    """EF-03 / ENF-02 : un rôle ne déclare que des tools de l'allowlist, jamais un tool irréversible ou
+    soumis à approbation, des portées connues qui couvrent ses tools, un budget fini sous le global ;
+    les réglages des frameworks restent verrouillés."""
+    import math
+    errs: list[str] = []
+    graph_only = set(policy.get("mission", {}).get("graph_only_tools", []))
+    mission_budget = policy.get("mission", {}).get("budget_default", {})
+    fs = crew.get("framework_settings", {})
+    if crew.get("process") != "sequential":
+        errs.append("crew : seul Process.sequential est admis en v2.0")
+    for k, expected in (("allow_delegation", False), ("allow_code_execution", False), ("memory", False), ("cache", False)):
+        if fs.get(k) is not expected:
+            errs.append(f"crew : {k} doit valoir {expected}")
+    if fs.get("native_tools"):
+        errs.append("crew : aucun tool natif CrewAI n'est admis")
+    ids = [r.get("id") for r in crew.get("roles", [])]
+    if len(set(ids)) != len(ids):
+        errs.append("crew : identifiants de rôle dupliqués")
+    for r in crew.get("roles", []):
+        rid = r.get("id", "?")
+        for t in r.get("tools", []):
+            if t not in tools:
+                errs.append(f"rôle {rid} : tool hors allowlist {t}")
+                continue
+            spec = tools[t]
+            if spec.requires_approval or spec.side_effect.startswith("irreversible") or t in graph_only:
+                errs.append(f"rôle {rid} : tool irréversible ou soumis à approbation interdit à un agent ({t})")
+            if spec.permission not in r.get("scopes", []):
+                errs.append(f"rôle {rid} : la portée {spec.permission} manque pour {t}")
+        if set(r.get("scopes", [])) - set(policy["scopes"]) or policy["approval"]["approver_scope"] in r.get("scopes", []):
+            errs.append(f"rôle {rid} : portées invalides")
+        b = r.get("budget", {})
+        if set(b) != set(BUDGET_KEYS):
+            errs.append(f"rôle {rid} : budget incomplet")
+        for k, v in b.items():
+            if not isinstance(v, (int, float)) or isinstance(v, bool) or not math.isfinite(v) or v <= 0:
+                errs.append(f"rôle {rid} : plafond {k} invalide")
+            elif k in mission_budget and v > mission_budget[k]:
+                errs.append(f"rôle {rid} : plafond {k} supérieur au budget global de mission")
+    return errs
 
 SIDE_EFFECTS = {"read", "write_reversible", "irreversible_local", "irreversible_external"}
 OUTCOMES = {"ok", "error", "denied", "rejected"}
@@ -19,6 +67,7 @@ CATEGORIES = {"nominal", "approval", "refusal", "error_recovery", "budget", "inj
 EFFECT_KEYS = {"mail_sent", "drafts_created", "drafts_deleted"}
 PLANNERS = {"rule", "scripted", "runaway"}
 BUDGET_DIMS = {"steps", "tool_calls", "tokens", "cost", "wall"}
+BUDGET_KEYS = ("max_steps", "max_tool_calls", "max_tokens", "max_cost_usd", "max_wall_s")
 
 
 def check() -> list[str]:
@@ -154,6 +203,7 @@ def check() -> list[str]:
             errs.append(f"couverture : aucun scénario de refus pour {name}")
     if not has_rejected:
         errs.append("couverture : aucun scénario d'approbation refusée")
+    errs += check_crew(load_crew(), tools, policy)
     return errs
 
 

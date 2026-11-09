@@ -104,7 +104,7 @@ def create_app(runtime: Runtime | None = None, api_keys: dict[str, dict[str, str
     @app.exception_handler(RequestValidationError)
     async def _validation_exc(_: Request, exc: RequestValidationError):
         errs = exc.errors()
-        budget = any("budget" in [str(x) for x in e.get("loc", ())] for e in errs)
+        budget = any(any("budget" in str(x) for x in e.get("loc", ())) for e in errs)
         code = "INVALID_BUDGET" if budget else "INVALID_REQUEST"
         msg = "; ".join(f"{'.'.join(str(x) for x in e.get('loc', ()))} : {e.get('msg')}" for e in errs)[:500]
         return JSONResponse(status_code=422, content={"error": {"code": code, "message": msg}})

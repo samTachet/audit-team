@@ -489,7 +489,8 @@ class TeamRuntime:
                             code="RUNTIME_RESTARTED")
                 return "restarted"
             mem = live.approvals.get(approval_id)
-            if mem is None or mem[0] != pend["args_hash"] or args_hash(pend["args"]) != mem[0]:
+            if (mem is None or mem[0] != pend["args_hash"] or args_hash(pend["args"]) != mem[0]
+                    or args_hash(mem[1]) != mem[0]):
                 raise ApprovalError("ARGS_MISMATCH", "arguments du journal différents de ceux gardés en mémoire")
             live.approvals.pop(approval_id)
             self._emit(st, "approval_resolved", {"approval_id": approval_id, "decision": decision, "approver": approver_id,
