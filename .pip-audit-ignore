@@ -1,0 +1,8 @@
+# Vulnérabilités ignorées par `pip-audit` en CI, avec justification. Revoir à chaque montée de version.
+# chromadb est une dépendance transitive de crewai (mémoire / knowledge RAG). audit-team désactive la mémoire et
+# n'utilise aucun knowledge source ; surtout, ces avis visent le SERVEUR ChromaDB (API HTTP, fournisseurs
+# d'authentification / RBAC), qu'audit-team ne démarre jamais. Aucune version corrigée n'était publiée au 2026-11-09.
+PYSEC-2026-311
+PYSEC-2026-3813
+PYSEC-2026-3814
+PYSEC-2026-3815

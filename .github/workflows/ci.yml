@@ -1,15 +1,68 @@
 name: ci
-on: [push, pull_request]
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  CREWAI_DISABLE_TELEMETRY: "true"
+  CREWAI_DISABLE_TRACKING: "true"
+  CREWAI_TRACING_ENABLED: "false"
+  OTEL_SDK_DISABLED: "true"
 jobs:
   verify:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
-      - run: uv sync --frozen
-      - run: uv run python -m acsi_agent.spec_check
-      - run: uv run python -m acsi_agent.docs_gen --check
-      - run: uv run pytest -q
-      # Rejeu des scénarios de référence : échoue si le comportement ou l'empreinte (prompt, modèle, tools) a changé
-      - run: uv run python -m acsi_agent.regress
-      - run: uv run python -m acsi_agent.demo --out /tmp/demo.md
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      - run: uv sync --frozen --python 3.13
+      - run: uv run --frozen python -m acsi_agent.spec_check
+      - run: uv run --frozen python -m acsi_agent.docs_gen --check
+      - run: uv run --frozen pytest -q
+      # Rejeu des scénarios de référence v1 : échoue si le comportement ou l'empreinte a changé
+      - run: uv run --frozen python -m acsi_agent.regress
+      - run: uv run --frozen python -m audit_team.eval --runner crewai
+      - run: uv run --frozen python -m acsi_agent.demo --out /tmp/demo.md
+
+  dependencies:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      - run: uv export --frozen --no-dev --no-emit-project --format requirements-txt > /tmp/requirements.txt
+      - name: pip-audit (ignores justifiés dans .pip-audit-ignore)
+        run: |
+          ignores=$(grep -v '^#' .pip-audit-ignore | grep -v '^$' | sed 's/^/--ignore-vuln /' | tr '\n' ' ')
+          uvx pip-audit==2.9.0 -r /tmp/requirements.txt --disable-pip --progress-spinner off $ignores
+
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: docker compose build
+      # Évaluation hermétique dans l'image : réseau coupé, FS en lecture seule
+      - run: docker compose run --rm eval
+      - name: API (un worker) répond sur /healthz
+        run: |
+          docker compose up -d api
+          for i in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:8000/healthz && exit 0
+            sleep 2
+          done
+          docker compose logs api
+          exit 1
+      - if: always()
+        run: docker compose down -v

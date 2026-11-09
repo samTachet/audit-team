@@ -1,10 +1,11 @@
-# eval : évaluation hermétique (aucun réseau, FS en lecture seule).
-# api  : API HTTP (cp .env.example .env ; sans clé, toute requête est refusée).
+# eval : évaluation hermétique (aucun réseau, FS en lecture seule) : v1 puis équipe.
+# api  : API HTTP audit-team (cp .env.example .env ; sans clé, toute requête est refusée).
+#        UN SEUL worker : verrous, approbations en attente et limiteur sont en mémoire du processus.
 services:
   eval:
     build: .
-    image: acsi-agent:${IMAGE_TAG:-dev}
-    command: ["python", "-m", "acsi_agent.eval"]
+    image: audit-team:${IMAGE_TAG:-dev}
+    command: ["sh", "-c", "python -m acsi_agent.eval && python -m audit_team.eval"]
     network_mode: none
     read_only: true
     tmpfs:
@@ -15,15 +16,22 @@ services:
 
   api:
     build: .
-    image: acsi-agent:${IMAGE_TAG:-dev}
-    command: ["uvicorn", "acsi_agent.api:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
+    image: audit-team:${IMAGE_TAG:-dev}
+    command: ["uvicorn", "audit_team.api:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
     env_file:
       - path: .env
         required: false
+    environment:
+      ACSI_ANCHOR_DIR: /app/data/anchors
+      ACSI_STATE_DIR: /app/data/state
+      AUDIT_TEAM_CHECKPOINTS: /app/data/state/checkpoints.sqlite
     ports:
       - "127.0.0.1:8000:8000"
     volumes:
+      # Le journal et ses ancres sont sur deux volumes distincts (une troncature du journal seul est détectée).
       - acsi-journal:/app/data/journal
+      - acsi-anchors:/app/data/anchors
+      - acsi-state:/app/data/state
     read_only: true
     tmpfs:
       - /tmp
@@ -35,8 +43,10 @@ services:
       interval: 10s
       timeout: 3s
       retries: 3
-      start_period: 5s
+      start_period: 10s
     restart: unless-stopped
 
 volumes:
   acsi-journal: {}
+  acsi-anchors: {}
+  acsi-state: {}

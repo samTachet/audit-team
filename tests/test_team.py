@@ -390,3 +390,8 @@ def test_crewai_mission_makes_no_network_call(rt, monkeypatch):
     monkeypatch.setattr(socket, "create_connection", no_net)
     svc = MissionService(rt, "crewai")
     assert approve(svc, svc.start(mi()))["status"] == "completed"
+
+
+def test_team_eval_cli_passes():
+    from audit_team.eval import main
+    assert main(["--runner", "direct"]) == 0

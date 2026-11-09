@@ -89,6 +89,13 @@ class GovernedLLM(BaseLLM):
     def get_context_window_size(self) -> int:
         return 64000
 
+    def get_input_tokens_count(self, messages, tools=None, response_model=None) -> int:
+        # Même estimation que CrewAI (1 jeton / 4 caractères), sans l'avertissement : l'imputation ACSI
+        # réelle se fait dans `decide` (usage_for), pas ici.
+        from crewai.utilities.message_utils import message_content_text
+        text = messages if isinstance(messages, str) else "".join(message_content_text(m) for m in messages)
+        return (len(text) + 3) // 4
+
     def _final(self, obj: dict[str, Any], thought: str) -> str:
         return f"Thought: {thought}\nFinal Answer: {json.dumps(obj, ensure_ascii=False)}"
 
