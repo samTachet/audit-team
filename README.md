@@ -153,10 +153,11 @@ Les doubles `injected`, `leak`, `runaway`, `rogue`, `naive` simulent déjà un m
 
 ## Ce qui a réellement été exécuté
 
-Voir `docs/DEPLOY.md` (section « Ce qui est vérifié ») pour l'état de la CI GitHub et de l'image Docker. En local
+**CI GitHub** : run 42717155158 vert (commit `43db11d`) sur les jobs `verify`, `dependencies` (pip-audit) et `docker`
+(build de l'image, éval hermétique dans le conteneur, `/healthz` de l'API) ; détail dans `docs/DEPLOY.md`. En local
 (Python 3.13.5, uv) : `pytest` (284 passés), `spec_check`, `docs_gen --check`, `regress`, `demo`, `acsi_agent.eval`,
 `audit_team.eval` (deux runners), `pip-audit` sur les dépendances verrouillées, et l'API lancée avec uvicorn (une mission
-jusqu'à `awaiting_approval`, checkpoints SQLite écrits). Docker n'était pas disponible dans l'environnement de développement.
+jusqu'à `awaiting_approval`, checkpoints SQLite écrits). Docker n'était pas disponible en local : l'image n'a été construite et lancée que par la CI ; `scripts/deploy.sh` n'a pas été exécuté contre un vrai démon.
 
 ## Écarts honnêtes par rapport au cahier des charges
 

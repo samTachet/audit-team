@@ -45,4 +45,9 @@ seul soit détectée) et `acsi-state` (registre d'idempotence et checkpoints Lan
 
 - Vérifié par `tests/test_deploy.py` avec un faux `docker` : ordre des opérations, état `current`/`previous`, retour automatique, refus sur arbre sale / portes en échec / tag malformé / image absente.
 - **Non vérifié en local** : la construction réelle de l'image et le démarrage du conteneur (pas de démon Docker dans l'environnement de développement). Le job `docker` de `.github/workflows/ci.yml` les exécute (build, `docker compose run --rm eval`, `/healthz` de l'API).
-- État de la CI GitHub : voir la section suivante (mise à jour après la première exécution).
+- **CI GitHub exécutée** : run 42717155158 du 2026-11-10 00:01 (heure de Paris) sur le commit `43db11d`, verte sur les trois jobs :
+  `verify` (spec_check, docs_gen --check, pytest 284 passés, regress, `audit_team.eval --runner crewai`, demo),
+  `dependencies` (pip-audit : aucune vulnérabilité hors les 4 avis ChromaDB ignorés et justifiés) et `docker`
+  (build de l'image, `docker compose run --rm eval` réseau coupé + FS en lecture seule, API un worker répondant sur `/healthz`).
+  Le premier run (42716947773) avait échoué au build Docker (README.md absent de l'image) ; corrigé dans `43db11d`.
+- Non exécuté : `scripts/deploy.sh` contre un vrai démon Docker, et `scripts/smoke.py` contre l'API conteneurisée.
