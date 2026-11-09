@@ -33,6 +33,10 @@ class JournalSealed(Exception):
     """Ajout refusé : le journal de cette requête est scellé."""
 
 
+class JournalTampered(Exception):
+    """Ajout refusé : le fichier ne correspond plus à sa tête ancrée (troncature, réécriture)."""
+
+
 def _canon(obj: Any) -> str:
     return json.dumps(obj, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
 
@@ -87,12 +91,21 @@ class Journal:
     def _head(self, request_id: str) -> tuple[int, str]:
         if request_id not in self._heads:
             events = self.read(request_id)
-            self._heads[request_id] = (len(events), events[-1]["hash"] if events else GENESIS)
+            head = (len(events), events[-1]["hash"] if events else GENESIS)
+            anc = self.anchor(request_id)
+            if anc is not None and (anc["seq"], anc["hash"]) != head:
+                # Jamais d'ajout sur un fichier qui ne correspond plus à son ancre : cela effacerait la preuve.
+                raise JournalTampered(f"journal {request_id} : fichier ({head[0]}) ≠ tête ancrée ({anc['seq']})")
+            self._heads[request_id] = head
         return self._heads[request_id]
 
     def head(self, request_id: str) -> tuple[int, str]:
+        """Tête (seq, hash) telle que lue dans le fichier (sans exiger l'accord de l'ancre)."""
         with self._lock:
-            return self._head(request_id)
+            if request_id in self._heads:
+                return self._heads[request_id]
+            events = self.read(request_id)
+            return (len(events), events[-1]["hash"] if events else GENESIS)
 
     # ------------------------------------------------------------ écriture
     def append(self, request_id: str, type_: str, data: dict[str, Any], ts: float | None = None,

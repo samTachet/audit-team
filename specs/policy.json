@@ -1,5 +1,5 @@
 {
-  "policy_version": "1.0.0",
+  "policy_version": "1.1.0",
   "default": "deny",
   "forbidden_actions": [
     {"name": "shell_exec", "reason": "Exécution arbitraire sur l'hôte : hors périmètre de l'agent d'audit."},
@@ -49,6 +49,19 @@
     "action": "abort",
     "semantics": "Arrêt immédiat : l'action proposée n'est pas exécutée, les approbations en attente sont annulées, les effets déjà produits ne sont pas annulés et sont listés dans l'enregistrement final.",
     "warn_ratio": 0.8
+  },
+  "mission": {
+    "note": "Missions d'équipe (audit-team). Le budget global borne la somme des rôles ; chaque rôle a son plafond (specs/crew.json), ramené au global s'il le dépasse.",
+    "budget_default": {
+      "max_steps": 40,
+      "max_tool_calls": 30,
+      "max_tokens": 120000,
+      "max_cost_usd": 1.0,
+      "max_wall_s": 300
+    },
+    "max_review_rounds": 3,
+    "max_consecutive_denials": 3,
+    "graph_only_tools": ["submit_dossier", "delete_draft"]
   },
   "rate_limits": {
     "tool_calls_per_minute_per_key": 60,

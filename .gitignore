@@ -5,3 +5,6 @@ __pycache__/
 .deploy/
 .env
 data/journal/
+data/journal-anchors/
+data/journal-state/
+data/checkpoints*

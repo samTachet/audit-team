@@ -80,8 +80,10 @@ def build_impls(svc: Services, registry: IdempotencyRegistry | None = None
         if args["nc_id"] not in {n["id"] for n in d["nonconformities"]}:
             raise ToolError("NC_NOT_FOUND", f"{args['nc_id']} n'appartient pas à {args['dossier_id']}")
         draft_id = _short_id("DR-", ctx.idem_key) if ctx.idem_key else _short_id("DR-", ctx.request_id, ctx.step)
-        if ctx.idem_key and draft_id in svc.drafts:  # reprise après crash : le brouillon existe déjà, pas de doublon
+        if ctx.idem_key and draft_id in svc.drafts:  # reprise ou nouveau tour de revue : pas de doublon
             dr = svc.drafts[draft_id]
+            if dr["status"] == "draft" and dr["text"] != args["text"]:
+                dr["text"] = args["text"]  # révision du même brouillon (effet réversible)
             return {"draft_id": draft_id, "dossier_id": dr["dossier_id"], "nc_id": dr["nc_id"], "status": dr["status"]}
         svc.drafts[draft_id] = {"dossier_id": args["dossier_id"], "nc_id": args["nc_id"], "text": args["text"], "status": "draft"}
         svc.drafts_created += 1
