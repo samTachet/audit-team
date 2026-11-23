@@ -58,7 +58,7 @@ def run(journal_dir: Path | None = None) -> tuple[str, dict[str, Any]]:
     b = pol["budget_default"]
     t, facts = Transcript(), {}
     t.p("# Démo acsi-agent")
-    t.p(f"Journaux de la démo : `{jdir}`. Planner déterministe, services simulés, gateway réelle.")
+    t.p(f"Journaux de la démo : répertoire temporaire `{Path(jdir).name}`. Planner déterministe, services simulés, gateway réelle.")
 
     # ---------------------------------------------------------------- 1. tâche complète
     t.h("1. Tâche complète avec approbation humaine")

@@ -1,5 +1,5 @@
 # Démo acsi-agent
-Journaux de la démo : `/tmp/acsi-demo-aspifxk1`. Planner déterministe, services simulés, gateway réelle.
+Journaux de la démo : répertoire temporaire `acsi-demo-aspifxk1`. Planner déterministe, services simulés, gateway réelle.
 
 ## 1. Tâche complète avec approbation humaine
 
